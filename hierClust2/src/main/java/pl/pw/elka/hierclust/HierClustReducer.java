@@ -20,6 +20,7 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 	private String option;
 	private String clustFNames;
 	private String connType;
+	private Context c;
 
 	ArrayList<String> keys = new ArrayList<String>();
 	ArrayList<Integer> mindists = new ArrayList<Integer>();
@@ -28,6 +29,7 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 	public void setup(Context context) throws IOException, InterruptedException {
 
 		super.setup(context);
+		c = context;
 		rows = new ArrayList<DistMatrixRow>();
 		option = context.getConfiguration().get("option");
 
@@ -38,11 +40,6 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 		dict = reader.readFromFileByDelim(path, ",", false);
 		mos = new MultipleOutputs(context);
 
-		// path = context.getConfiguration().get("clust");
-		// path = "." + path.substring(path.lastIndexOf("/"));
-
-		// ArrayList<String> tmp = reader.readFromFileByDelim(path, ",", true);
-		// String[] sp;
 		clustFNames = context.getConfiguration().get("output.clusterfilenames");
 		connType = context.getConfiguration().get("connType");
 		if (connType.equals("")) {
@@ -54,26 +51,29 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 			throws IOException, InterruptedException {
 
 		if (option.equals("p")) {
-			reduceParallel(context, lines);
+			reduceParallel(context, lines, key);
 		} else if (option.equals("l")) {
 			reduceLinear(context, lines);
 		}
 
 	}
 
-	private void reduceParallel(Context context, Iterable<Text> lines) {
+	private void reduceParallel(Context context, Iterable<Text> lines, Text key) {
 
 		rows = new ArrayList<DistMatrixRow>();
 		/**
 		 * Computational complexity: 2 or 4 A
 		 */
 		for (Text text : lines) {
-			DistMatrixRow row = new DistMatrixRow(text);
+			DistMatrixRow row = new DistMatrixRow(text, context);
 			rows.add(row);
 		}
+		/**
+		 * Computational complexity: processPair or Process Single
+		 */
 		try {
 			if (rows.size() == 2) {
-				processPair(context);
+				processPair(context, key);
 			} else if (rows.size() == 1) {
 				processSingle(context);
 			}
@@ -84,28 +84,19 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 	}
 
 	/**
-	 * Computational complexity: Merge + getzeros + zeros*(A + getCluster) + 2W
+	 * Computational complexity: getMinDIst + merge +
 	 */
-	private void processPair(Context context) throws Exception {
+	private void processPair(Context context, Text key) throws Exception {
 
 		int mindist = rows.get(0).getMinDist();
 		DistMatrixRow newRow = rows.get(0).merge(rows.get(1), connType);
-		String zeros = newRow.getZerosPositions();
-		String nk = "";
-		String[] z = zeros.split(",");
-		for (String s : z) {
+		context.write(key, new Text("" + newRow));
 
-			nk = nk + getCluster(Integer.parseInt(s)) + "&";
-		}
-		nk = nk.substring(0, nk.length() - 1);
-		String newkey = nk;
-
-		context.write(new Text(newkey), new Text("" + newRow));
 		if (!clustFNames.equals("")) {
 
 			mos.write(
 					context.getConfiguration().get("output.clusterfilenames"),
-					newkey, new Text("" + mindist));
+					key, new Text("" + mindist));
 		}
 	}
 
@@ -115,53 +106,30 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 		processSingle(context, newRow);
 	}
 
+	/**
+	 * Computational complexity: getZeros + W
+	 */
 	private void processSingle(Context context, DistMatrixRow newRow)
 			throws Exception {
 
 		//
 		String zeros = newRow.getZerosPositions();
-		String nk = "";
-		String[] z = zeros.split(",");
-		for (String s : z) {
-
-			nk = nk + getCluster(Integer.parseInt(s)) + "&";
-		}
-		nk = nk.substring(0, nk.length() - 1);
-		// String newkey = "" + sp[0] + ":" + sp[1];
-		String newkey = nk;
-		//
-
-		context.write(new Text(newkey), new Text("" + newRow));
+		context.write(new Text(zeros), new Text("" + newRow));
 		if (!clustFNames.equals("")) {
 			mos.write(
 					context.getConfiguration().get("output.clusterfilenames"),
-					newkey, new Text("" + 0));
+					zeros, new Text("" + 0));
 		}
-	}
-
-	/**
-	 * Computational complexity: Cluster size * dict size
-	 */
-
-	private String getCluster(int pos) {
-
-		String p = dict.get(pos);
-		for (String s : dict) {
-			if (s.contains(p)) {
-				return s;
-			}
-		}
-		return null;
 	}
 
 	private void reduceLinear(Context context, Iterable<Text> lines) {
 		rows = new ArrayList<DistMatrixRow>();
 
 		readLinesIntoArrays(lines);
-		String[] toRemove = findPair();
+		String[] toRemove = findPair(context);
 
 		try {
-			processPair(context);
+			processPair(context, new Text(toRemove[2]));
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
@@ -170,8 +138,8 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 
 		DistMatrixRow row;
 		for (String val : vals) {
-			row = new DistMatrixRow(new Text(val));
-
+			row = new DistMatrixRow(new Text(val), context);
+			assIncr();
 			try {
 				processSingle(context, row);
 			} catch (Exception e) {
@@ -192,12 +160,13 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 			keys.add(split[0]);
 			mindists.add(Integer.parseInt(split[1]));
 			vals.add(split[2]);
+			assIncr(4);
 
 		}
 
 	}
 
-	private String[] findPair() {
+	private String[] findPair(Context context) {
 
 		int min = Collections.min(mindists);
 		int ind1 = 0, ind2 = 0;
@@ -206,21 +175,25 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 			if (minKeys.containsKey(keys.get(i))) {
 				ind1 = minKeys.get(keys.get(i));
 				ind2 = i;
+				assIncr(2);
 				break;
 			} else if (mindists.get(i) == min) {
 				minKeys.put(keys.get(i), i);
+				assIncr();
 			}
+			ifIncr();
 		}
 
 		rows = new ArrayList<DistMatrixRow>();
 		String val1 = vals.get(ind1);
-		DistMatrixRow row = new DistMatrixRow(new Text(val1));
+		DistMatrixRow row = new DistMatrixRow(new Text(val1), context);
 		rows.add(row);
 		String val2 = vals.get(ind2);
-		row = new DistMatrixRow(new Text(val2));
+		row = new DistMatrixRow(new Text(val2), context);
 		rows.add(row);
 
-		String[] ar = { val1, val2 };
+		String key1 = keys.get(ind1);
+		String[] ar = { val1, val2, key1 };
 		return ar;
 	}
 
@@ -237,5 +210,21 @@ public class HierClustReducer extends Reducer<Text, Text, Text, Text> {
 
 	private String generateFileName(Text k, Text v) {
 		return k.toString() + "_" + v.toString();
+	}
+
+	private void ifIncr() {
+		c.getCounter(HierClustDriver.COMPLEXITY_COUNTER.IF_CNT).increment(1);
+	}
+
+	private void ifIncr(int i) {
+		c.getCounter(HierClustDriver.COMPLEXITY_COUNTER.IF_CNT).increment(i);
+	}
+
+	private void assIncr() {
+		c.getCounter(HierClustDriver.COMPLEXITY_COUNTER.ASS_CNT).increment(1);
+	}
+
+	private void assIncr(int i) {
+		c.getCounter(HierClustDriver.COMPLEXITY_COUNTER.ASS_CNT).increment(i);
 	}
 }

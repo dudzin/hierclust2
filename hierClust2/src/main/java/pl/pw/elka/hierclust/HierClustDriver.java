@@ -10,6 +10,8 @@ import org.apache.hadoop.filecache.DistributedCache;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Counter;
+import org.apache.hadoop.mapreduce.Counters;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
@@ -23,6 +25,13 @@ import pl.pw.elka.commons.HDFSFileReader;
 
 public class HierClustDriver extends Configured implements Tool {
 	HDFSFileReader hdfs;
+	ArrayList<Long> jobtimes;
+	long t;
+	private long ifCnt, assCnt;
+
+	public static enum COMPLEXITY_COUNTER {
+		IF_CNT, ASS_CNT;
+	}
 
 	public static void main(String[] args) throws Exception {
 
@@ -65,11 +74,13 @@ public class HierClustDriver extends Configured implements Tool {
 		int stepResult = 2;
 		int endCond = conf.getInt("endcond", 0);
 		int step;
-
+		ifCnt = 0;
+		assCnt = 0;
 		confPropertiesInit();
 		step = conf.getInt("step", 0);
 		// long startTime = System.nanoTime();
 		ArrayList<Long> times = new ArrayList<Long>();
+		jobtimes = new ArrayList<Long>();
 		times.add(System.nanoTime());
 		while (stepResult > endCond && jobCompletion) {
 
@@ -98,8 +109,21 @@ public class HierClustDriver extends Configured implements Tool {
 					+ (times.get(i) - times.get(i - 1)) / 1000000000 + " sec");
 		}
 
+		long fulltime = 0;
+		for (int i = 1; i < jobtimes.size(); i++) {
+			System.out.println("Step " + i + " job time: " + (jobtimes.get(i))
+					/ 1000000000 + " sec");
+			fulltime += (jobtimes.get(i)) / 1000000000;
+		}
+
 		System.out.println("\nTotal Execution time: "
 				+ (times.get(times.size() - 1) - times.get(0)) / 1000000000);
+
+		System.out.println("Counters: ");
+		System.out.println("IF	:	" + ifCnt);
+		System.out.println("ASS	:	" + assCnt);
+
+		// System.out.println("\nTotal Job Execution time: " + fulltime);
 	}
 
 	private boolean checkParams() {
@@ -230,7 +254,11 @@ public class HierClustDriver extends Configured implements Tool {
 			System.out.println("connType: " + conf.get("connType"));
 			Job job = setupJob();
 			// job.setNumReduceTasks(0);
-			return job.waitForCompletion(true);
+			// t = System.nanoTime();
+			boolean res = job.waitForCompletion(true);
+			// jobtimes.add(System.nanoTime() - t);
+			printCounters(job.getCounters());
+			return res;
 		} catch (Exception e) {
 			e.printStackTrace();
 			return false;
@@ -311,4 +339,13 @@ public class HierClustDriver extends Configured implements Tool {
 
 	}
 
+	private void printCounters(Counters counters) {
+		Counter c1 = counters.findCounter(COMPLEXITY_COUNTER.IF_CNT);
+		System.out.println(c1.getDisplayName() + ":" + c1.getValue());
+		ifCnt += c1.getValue();
+		c1 = counters.findCounter(COMPLEXITY_COUNTER.ASS_CNT);
+		System.out.println(c1.getDisplayName() + ":" + c1.getValue());
+		assCnt += c1.getValue();
+
+	}
 }
